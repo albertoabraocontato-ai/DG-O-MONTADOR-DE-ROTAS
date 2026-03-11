@@ -193,7 +193,7 @@ export default function AgenteRotas() {
             </span>
           </div>
           <h1 style={{ fontSize: "38px", fontWeight: "700", margin: 0, lineHeight: 1.1, letterSpacing: "-1px" }}>
-            Agente de<br /><span style={{ color: "#FF6B35" }}>Rotas Inteligente</span>
+            DG — O<br /><span style={{ color: "#FF6B35" }}>Montador de Rotas</span>
           </h1>
           <p style={{ marginTop: "12px", color: "#888", fontSize: "15px", fontWeight: "300" }}>
             Envie o print da lista de entregas · A IA monta a rota respeitando os horários
