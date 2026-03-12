@@ -109,8 +109,8 @@ export default function DGMontadorRotas() {
     reader.readAsDataURL(file);
   };
 
-  const callAPI = async (messages, system) => {
-    const body = { model: "claude-sonnet-4-20250514", max_tokens: 4000, messages };
+  const callAPI = async (messages, system, maxTokens = 4000) => {
+    const body = { model: "claude-sonnet-4-20250514", max_tokens: maxTokens, messages };
     if (system) body.system = system;
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -124,7 +124,11 @@ export default function DGMontadorRotas() {
     });
     if (!res.ok) { const e = await res.json(); throw new Error(e.error?.message || "Erro na API"); }
     const data = await res.json();
-    return (data.content?.map(i => i.text || "").join("") || "").replace(/```json|```/g, "").trim();
+    const raw = (data.content?.map(i => i.text || "").join("") || "");
+    // Extrai o JSON mesmo que venha com texto ao redor
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (match) return match[0];
+    return raw.replace(/```json|```/g, "").trim();
   };
 
   const gerarRota = async () => {
@@ -165,7 +169,7 @@ export default function DGMontadorRotas() {
             { type: "text", text: "Extraia todas as entregas deste PDF e retorne SOMENTE JSON valido, sem markdown.\n" +
               'Formato: {"entregas":[{"numero":1,"endereco":"endereco completo","bairro":"nome do bairro","cidade":"BH ou cidade","janela_inicio":"07:00","janela_fim":"10:00","observacao":"qualquer obs importante"}]}' }
           ]
-        }]);
+        }], null, 6000);
         const extraido = JSON.parse(textoExtracao);
         entregasTexto = extraido.entregas.map(e =>
           "Entrega #" + e.numero + ": " + e.endereco +
