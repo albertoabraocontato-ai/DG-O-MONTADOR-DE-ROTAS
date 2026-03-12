@@ -125,10 +125,35 @@ export default function DGMontadorRotas() {
     if (!res.ok) { const e = await res.json(); throw new Error(e.error?.message || "Erro na API"); }
     const data = await res.json();
     const raw = (data.content?.map(i => i.text || "").join("") || "");
-    // Extrai o JSON mesmo que venha com texto ao redor
     const match = raw.match(/\{[\s\S]*\}/);
     if (match) return match[0];
     return raw.replace(/```json|```/g, "").trim();
+  };
+
+  const parseJSONSeguro = (texto) => {
+    // Tenta parse direto
+    try { return JSON.parse(texto); } catch {}
+    // Tenta extrair só o bloco JSON
+    try {
+      const match = texto.match(/\{[\s\S]*\}/);
+      if (match) return JSON.parse(match[0]);
+    } catch {}
+    // JSON truncado: tenta fechar as chaves/colchetes abertos
+    try {
+      let s = texto.trim();
+      // Conta abertura e fechamento
+      let opens = (s.match(/\{/g) || []).length - (s.match(/\}/g) || []).length;
+      let aopens = (s.match(/\[/g) || []).length - (s.match(/\]/g) || []).length;
+      // Remove trailing vírgula se houver
+      s = s.replace(/,\s*$/, "");
+      s = s.replace(/,\s*\]/, "]");
+      // Fecha arrays abertos
+      for (let i = 0; i < aopens; i++) s += "]";
+      // Fecha objetos abertos
+      for (let i = 0; i < opens; i++) s += "}";
+      return JSON.parse(s);
+    } catch {}
+    throw new Error("Nao foi possivel interpretar a resposta. Tente com menos entregas ou use a aba Digitar.");
   };
 
   const gerarRota = async () => {
@@ -150,7 +175,7 @@ export default function DGMontadorRotas() {
             'Formato: {"entregas":[{"numero":1,"endereco":"endereco completo","bairro":"nome do bairro","cidade":"BH ou cidade","janela_inicio":"07:00","janela_fim":"10:00","observacao":"qualquer obs importante"}]}\n\n' +
             "TEXTO:\n" + textoManual
         }]);
-        const extraido = JSON.parse(textoExtracao);
+        const extraido = parseJSONSeguro(textoExtracao);
         entregasTexto = extraido.entregas.map(e =>
           "Entrega #" + e.numero + ": " + e.endereco +
           " | Bairro: " + (e.bairro || "?") +
@@ -169,8 +194,8 @@ export default function DGMontadorRotas() {
             { type: "text", text: "Extraia todas as entregas deste PDF e retorne SOMENTE JSON valido, sem markdown.\n" +
               'Formato: {"entregas":[{"numero":1,"endereco":"endereco completo","bairro":"nome do bairro","cidade":"BH ou cidade","janela_inicio":"07:00","janela_fim":"10:00","observacao":"qualquer obs importante"}]}' }
           ]
-        }], null, 6000);
-        const extraido = JSON.parse(textoExtracao);
+        }], null, 8000);
+        const extraido = parseJSONSeguro(textoExtracao);
         entregasTexto = extraido.entregas.map(e =>
           "Entrega #" + e.numero + ": " + e.endereco +
           " | Bairro: " + (e.bairro || "?") +
@@ -189,7 +214,7 @@ export default function DGMontadorRotas() {
             { type: "text", text: buildPromptExtracao() }
           ]
         }]);
-        const extraido = JSON.parse(textoExtracao);
+        const extraido = parseJSONSeguro(textoExtracao);
         entregasTexto = extraido.entregas.map(e =>
           "Entrega #" + e.numero + ": " + e.endereco +
           " | Bairro: " + (e.bairro || "?") +
@@ -203,9 +228,9 @@ export default function DGMontadorRotas() {
       const textoRota = await callAPI([{
         role: "user",
         content: buildPromptRota(entregasTexto, motoristas.length, memoria)
-      }]);
+      }], null, 8000);
 
-      const rota = JSON.parse(textoRota);
+      const rota = parseJSONSeguro(textoRota);
       rota.motoristas = rota.motoristas.map((m, i) => ({ ...m, nome: motoristas[i]?.nome || m.nome }));
 
       setResultado(rota);
@@ -233,8 +258,8 @@ export default function DGMontadorRotas() {
       const prompt = "Voce e o DG, o Montador de Rotas.\n\nFeedback do dono: \"" + feedback + "\"\n\nRota atual:\n" +
         JSON.stringify(resultado, null, 2) + "\n\nCorrija a rota e retorne SOMENTE JSON:\n" +
         '{"rotaCorrigida":{"motoristas":[],"alertas":[],"raciocinio":""},"regraAprendida":"regra em 1 frase"}';
-      const text = await callAPI([{ role: "user", content: prompt }]);
-      const parsed = JSON.parse(text);
+      const text = await callAPI([{ role: "user", content: prompt }], null, 8000);
+      const parsed = parseJSONSeguro(text);
       const novaMemoria = {
         ...memoria,
         correcoes: [...memoria.correcoes, "\"" + feedback + "\" -> " + parsed.regraAprendida],
