@@ -79,7 +79,12 @@ export default function DGMontadorRotas() {
   const [memoria, setMemoria] = useState(carregarMemoria);
   const [showMemoria, setShowMemoria] = useState(false);
   const [feedbackEnviado, setFeedbackEnviado] = useState(null);
+  const [tipoEntrada, setTipoEntrada] = useState("imagem"); // "imagem" | "pdf" | "texto"
+  const [textoManual, setTextoManual] = useState("");
+  const [pdfBase64, setPdfBase64] = useState(null);
+  const [pdfNome, setPdfNome] = useState("");
   const fileRef = useRef();
+  const pdfRef = useRef();
 
   useEffect(() => { if (apiKey) localStorage.setItem("dg_apikey", apiKey); }, [apiKey]);
 
@@ -93,6 +98,14 @@ export default function DGMontadorRotas() {
     setImagemType(file.type || "image/png");
     const reader = new FileReader();
     reader.onload = (e) => setImagemBase64(e.target.result.split(",")[1]);
+    reader.readAsDataURL(file);
+  };
+
+  const handlePDF = (file) => {
+    if (!file) return;
+    setPdfNome(file.name);
+    const reader = new FileReader();
+    reader.onload = (e) => setPdfBase64(e.target.result.split(",")[1]);
     reader.readAsDataURL(file);
   };
 
@@ -115,29 +128,72 @@ export default function DGMontadorRotas() {
   };
 
   const gerarRota = async () => {
-    if (!imagemBase64) { setErro("Adicione o print da lista de entregas."); return; }
+    if (tipoEntrada === "imagem" && !imagemBase64) { setErro("Adicione o print da lista de entregas."); return; }
+    if (tipoEntrada === "pdf" && !pdfBase64) { setErro("Adicione o PDF da lista de entregas."); return; }
+    if (tipoEntrada === "texto" && !textoManual.trim()) { setErro("Digite a lista de entregas no campo de texto."); return; }
     if (!apiKey.trim()) { setErro("Insira sua chave API Anthropic."); return; }
     setLoading(true); setErro(null);
 
     try {
-      setLoadingMsg("Lendo a lista de entregas...");
-      const textoExtracao = await callAPI([{
-        role: "user",
-        content: [
-          { type: "image", source: { type: "base64", media_type: imagemType, data: imagemBase64 } },
-          { type: "text", text: buildPromptExtracao() }
-        ]
-      }]);
+      let entregasTexto = "";
 
-      const extraido = JSON.parse(textoExtracao);
+      if (tipoEntrada === "texto") {
+        // Texto direto: extrai via API sem imagem
+        setLoadingMsg("Interpretando a lista de entregas...");
+        const textoExtracao = await callAPI([{
+          role: "user",
+          content: "Extraia todas as entregas do texto abaixo e retorne SOMENTE JSON valido, sem markdown.\n" +
+            'Formato: {"entregas":[{"numero":1,"endereco":"endereco completo","bairro":"nome do bairro","cidade":"BH ou cidade","janela_inicio":"07:00","janela_fim":"10:00","observacao":"qualquer obs importante"}]}\n\n' +
+            "TEXTO:\n" + textoManual
+        }]);
+        const extraido = JSON.parse(textoExtracao);
+        entregasTexto = extraido.entregas.map(e =>
+          "Entrega #" + e.numero + ": " + e.endereco +
+          " | Bairro: " + (e.bairro || "?") +
+          " | Cidade: " + (e.cidade || "BH") +
+          " | Janela: " + e.janela_inicio + " ate " + e.janela_fim +
+          (e.observacao ? " | OBS: " + e.observacao : "")
+        ).join("\n");
 
-      const entregasTexto = extraido.entregas.map(e =>
-        "Entrega #" + e.numero + ": " + e.endereco +
-        " | Bairro: " + (e.bairro || "?") +
-        " | Cidade: " + (e.cidade || "BH") +
-        " | Janela: " + e.janela_inicio + " ate " + e.janela_fim +
-        (e.observacao ? " | OBS: " + e.observacao : "")
-      ).join("\n");
+      } else if (tipoEntrada === "pdf") {
+        // PDF: manda como documento
+        setLoadingMsg("Lendo o PDF da lista de entregas...");
+        const textoExtracao = await callAPI([{
+          role: "user",
+          content: [
+            { type: "document", source: { type: "base64", media_type: "application/pdf", data: pdfBase64 } },
+            { type: "text", text: "Extraia todas as entregas deste PDF e retorne SOMENTE JSON valido, sem markdown.\n" +
+              'Formato: {"entregas":[{"numero":1,"endereco":"endereco completo","bairro":"nome do bairro","cidade":"BH ou cidade","janela_inicio":"07:00","janela_fim":"10:00","observacao":"qualquer obs importante"}]}' }
+          ]
+        }]);
+        const extraido = JSON.parse(textoExtracao);
+        entregasTexto = extraido.entregas.map(e =>
+          "Entrega #" + e.numero + ": " + e.endereco +
+          " | Bairro: " + (e.bairro || "?") +
+          " | Cidade: " + (e.cidade || "BH") +
+          " | Janela: " + e.janela_inicio + " ate " + e.janela_fim +
+          (e.observacao ? " | OBS: " + e.observacao : "")
+        ).join("\n");
+
+      } else {
+        // Imagem: fluxo original
+        setLoadingMsg("Lendo a lista de entregas...");
+        const textoExtracao = await callAPI([{
+          role: "user",
+          content: [
+            { type: "image", source: { type: "base64", media_type: imagemType, data: imagemBase64 } },
+            { type: "text", text: buildPromptExtracao() }
+          ]
+        }]);
+        const extraido = JSON.parse(textoExtracao);
+        entregasTexto = extraido.entregas.map(e =>
+          "Entrega #" + e.numero + ": " + e.endereco +
+          " | Bairro: " + (e.bairro || "?") +
+          " | Cidade: " + (e.cidade || "BH") +
+          " | Janela: " + e.janela_inicio + " ate " + e.janela_fim +
+          (e.observacao ? " | OBS: " + e.observacao : "")
+        ).join("\n");
+      }
 
       setLoadingMsg("Montando a rota otimizada...");
       const textoRota = await callAPI([{
@@ -253,22 +309,81 @@ export default function DGMontadorRotas() {
             </div>
 
             <div>
-              <label style={{ fontSize: "11px", fontFamily: "'Bebas Neue'", color: "#FF6B35", letterSpacing: "3px", display: "block", marginBottom: "10px" }}>01 — PRINT DA LISTA DE ENTREGAS</label>
-              <div onClick={() => fileRef.current.click()} onDrop={e => { e.preventDefault(); handleImagem(e.dataTransfer.files[0]); }} onDragOver={e => e.preventDefault()}
-                style={{ border: imagem ? "2px solid #FF6B35" : "2px dashed #222", borderRadius: "16px", padding: imagem ? 0 : "40px 24px", textAlign: "center", cursor: "pointer", overflow: "hidden", minHeight: imagem ? "160px" : "auto", position: "relative" }}>
-                {imagem ? (
-                  <>
-                    <img src={imagem} alt="Lista" style={{ width: "100%", display: "block", maxHeight: "300px", objectFit: "contain" }} />
-                    <div style={{ position: "absolute", bottom: "12px", right: "12px", background: "#FF6B35", color: "#fff", borderRadius: "8px", padding: "6px 12px", fontSize: "12px", fontWeight: "700" }}>Trocar</div>
-                  </>
-                ) : (
-                  <>
-                    <div style={{ fontSize: "28px", marginBottom: "8px" }}>📋</div>
-                    <p style={{ margin: 0, color: "#555", fontSize: "14px" }}>Arraste o print ou clique para selecionar</p>
-                  </>
-                )}
+              <label style={{ fontSize: "11px", fontFamily: "'Bebas Neue'", color: "#FF6B35", letterSpacing: "3px", display: "block", marginBottom: "10px" }}>01 — LISTA DE ENTREGAS</label>
+
+              {/* Tabs */}
+              <div style={{ display: "flex", gap: "6px", marginBottom: "12px" }}>
+                {[["imagem", "📷 Print/Foto"], ["pdf", "📄 PDF"], ["texto", "✏️ Digitar"]].map(([tipo, label]) => (
+                  <button key={tipo} onClick={() => setTipoEntrada(tipo)} style={{
+                    flex: 1, padding: "8px", borderRadius: "8px", border: "none", cursor: "pointer",
+                    fontFamily: "'DM Sans'", fontSize: "12px", fontWeight: "600",
+                    background: tipoEntrada === tipo ? "#FF6B35" : "rgba(255,255,255,0.04)",
+                    color: tipoEntrada === tipo ? "#fff" : "#666",
+                    transition: "all 0.2s"
+                  }}>{label}</button>
+                ))}
               </div>
+
+              {/* Imagem */}
+              {tipoEntrada === "imagem" && (
+                <div onClick={() => fileRef.current.click()} onDrop={e => { e.preventDefault(); handleImagem(e.dataTransfer.files[0]); }} onDragOver={e => e.preventDefault()}
+                  style={{ border: imagem ? "2px solid #FF6B35" : "2px dashed #222", borderRadius: "16px", padding: imagem ? 0 : "40px 24px", textAlign: "center", cursor: "pointer", overflow: "hidden", minHeight: imagem ? "160px" : "auto", position: "relative" }}>
+                  {imagem ? (
+                    <>
+                      <img src={imagem} alt="Lista" style={{ width: "100%", display: "block", maxHeight: "300px", objectFit: "contain" }} />
+                      <div style={{ position: "absolute", bottom: "12px", right: "12px", background: "#FF6B35", color: "#fff", borderRadius: "8px", padding: "6px 12px", fontSize: "12px", fontWeight: "700" }}>Trocar</div>
+                    </>
+                  ) : (
+                    <>
+                      <div style={{ fontSize: "28px", marginBottom: "8px" }}>📷</div>
+                      <p style={{ margin: 0, color: "#555", fontSize: "14px" }}>Arraste o print ou clique para selecionar</p>
+                      <p style={{ margin: "4px 0 0", color: "#444", fontSize: "11px" }}>JPG, PNG, WEBP</p>
+                    </>
+                  )}
+                </div>
+              )}
               <input ref={fileRef} type="file" accept="image/*" style={{ display: "none" }} onChange={e => handleImagem(e.target.files[0])} />
+
+              {/* PDF */}
+              {tipoEntrada === "pdf" && (
+                <div onClick={() => pdfRef.current.click()} onDrop={e => { e.preventDefault(); handlePDF(e.dataTransfer.files[0]); }} onDragOver={e => e.preventDefault()}
+                  style={{ border: pdfBase64 ? "2px solid #FF6B35" : "2px dashed #222", borderRadius: "16px", padding: "32px 24px", textAlign: "center", cursor: "pointer" }}>
+                  {pdfBase64 ? (
+                    <div>
+                      <div style={{ fontSize: "32px" }}>📄</div>
+                      <p style={{ margin: "8px 0 4px", color: "#FF6B35", fontWeight: "700", fontSize: "14px" }}>{pdfNome}</p>
+                      <p style={{ margin: 0, color: "#555", fontSize: "12px" }}>Clique para trocar</p>
+                    </div>
+                  ) : (
+                    <>
+                      <div style={{ fontSize: "28px", marginBottom: "8px" }}>📄</div>
+                      <p style={{ margin: 0, color: "#555", fontSize: "14px" }}>Arraste o PDF ou clique para selecionar</p>
+                      <p style={{ margin: "4px 0 0", color: "#444", fontSize: "11px" }}>Apenas arquivos .PDF</p>
+                    </>
+                  )}
+                </div>
+              )}
+              <input ref={pdfRef} type="file" accept=".pdf,application/pdf" style={{ display: "none" }} onChange={e => handlePDF(e.target.files[0])} />
+
+              {/* Texto */}
+              {tipoEntrada === "texto" && (
+                <div>
+                  <textarea
+                    value={textoManual}
+                    onChange={e => setTextoManual(e.target.value)}
+                    placeholder={"Digite ou cole a lista de entregas aqui.\nExemplo:\n1. Rua das Flores, 100 - Gutierrez | 07:00 - 10:00\n2. Av. Principal, 500 - Buritis | 08:00 - 12:00\n..."}
+                    style={{
+                      width: "100%", minHeight: "200px", background: "rgba(255,255,255,0.04)",
+                      border: "2px dashed #333", borderRadius: "14px", padding: "14px 16px",
+                      color: "#F0EEE8", fontSize: "13px", outline: "none", resize: "vertical",
+                      fontFamily: "'DM Sans'", lineHeight: 1.6, boxSizing: "border-box"
+                    }}
+                  />
+                  <p style={{ margin: "6px 0 0", fontSize: "11px", color: "#444" }}>
+                    Escreva um endereco por linha. Inclua horarios no formato HH:MM.
+                  </p>
+                </div>
+              )}
             </div>
 
             <div>
