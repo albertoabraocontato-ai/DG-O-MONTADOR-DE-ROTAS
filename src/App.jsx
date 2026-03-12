@@ -1,83 +1,189 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 
-const COLORS = [
-  { bg: "#FF6B35", light: "#FFF0EB", text: "#FF6B35" },
-  { bg: "#2EC4B6", light: "#E8FAFA", text: "#2EC4B6" },
-  { bg: "#9B5DE5", light: "#F3ECFD", text: "#9B5DE5" },
-  { bg: "#F7B731", light: "#FEF9E7", text: "#F7B731" },
-  { bg: "#E84393", light: "#FDEEF6", text: "#E84393" },
+// ─── Storage helpers (localStorage for persistence) ───────────────────────
+const STORAGE_KEY = "dg_memoria";
+
+function carregarMemoria() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : { regras: [], rotasAprovadas: [], correcoes: [] };
+  } catch { return { regras: [], rotasAprovadas: [], correcoes: [] }; }
+}
+
+function salvarMemoria(mem) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(mem));
+}
+
+// ─── Colors ───────────────────────────────────────────────────────────────
+const CORES = [
+  "#FF6B35", "#2EC4B6", "#9B5DE5", "#F7B731", "#E84393"
 ];
 
-const SYSTEM_PROMPT = `Você é um especialista em logística e otimização de rotas de entrega no Brasil.
+// ─── Build system prompt with accumulated memory ──────────────────────────
+function buildSystemPrompt(memoria) {
+  const regrasTexto = memoria.regras.length > 0
+    ? memoria.regras.map((r, i) => `${i + 1}. ${r}`).join("\n")
+    : "Nenhuma regra personalizada ainda.";
 
-O usuário vai te enviar uma imagem com uma lista de entregas contendo endereços e janelas de horário.
+  const exemploTexto = memoria.rotasAprovadas.length > 0
+    ? memoria.rotasAprovadas.slice(-3).map((r, i) =>
+        `Exemplo ${i + 1}: ${r.resumo}`
+      ).join("\n")
+    : "Nenhuma rota aprovada ainda.";
 
-Sua tarefa é:
-1. Extrair todos os endereços, horários de início e fim, e produto de cada entrega
-2. Para cada motorista, montar a rota mais eficiente respeitando OBRIGATORIAMENTE as janelas de horário (isso tem prioridade absoluta sobre distância)
-3. Retornar SOMENTE um JSON válido, sem markdown, sem texto extra
+  const correcoesTexto = memoria.correcoes.length > 0
+    ? memoria.correcoes.slice(-5).map((c, i) =>
+        `Correção ${i + 1}: ${c}`
+      ).join("\n")
+    : "Nenhuma correção registrada ainda.";
 
-REGRA CRÍTICA: SEMPRE verifique as janelas de horário ANTES de otimizar por proximidade. Uma entrega com janela mais cedo pode estar mais longe, mas deve ser feita primeiro.
+  return `Você é o DG — O Montador de Rotas, um especialista em logística treinado especificamente pelo dono da operação para montar rotas exatamente como ele pensa.
 
-Formato de resposta (JSON puro, sem backticks):
+PONTO DE PARTIDA FIXO: Rua Manoel Lopes Coelho, 174 - Itapoã, Belo Horizonte, MG.
+
+═══════════════════════════════════════
+PRINCÍPIOS FUNDAMENTAIS (IMUTÁVEIS)
+═══════════════════════════════════════
+
+PRINCÍPIO 1 — BLOCOS POR HORÁRIO DE INÍCIO:
+- Agrupe todas as entregas pelo horário de INÍCIO da janela
+- Ordene os blocos do horário mais cedo ao mais tarde
+- NUNCA misture entregas de blocos de horário diferentes no meio da rota
+- Exemplo: todas as entregas que abrem às 07:00 formam um bloco, depois as de 08:00, depois as de 09:00
+
+PRINCÍPIO 2 — GEOGRAFIA DENTRO DO BLOCO:
+- Dentro de cada bloco de horário, ordene as entregas por PROXIMIDADE GEOGRÁFICA
+- Forme uma linha contínua e progressiva no mapa — sem zigue-zague, sem voltar para trás
+- Pense como traçar uma rota no mapa: o motorista avança numa direção lógica
+
+PRINCÍPIO 3 — HORÁRIO DE SAÍDA CALCULADO:
+- O motorista NÃO precisa sair em horário fixo
+- Calcule o horário de saída IDEAL para chegar na primeira entrega exatamente no início da janela
+- Nunca deixe o motorista chegar antes do início da janela (a não ser que seja inevitável para respeitar outra entrega)
+- Se chegar antes, ele aguarda no local — isso é correto e não é erro
+
+PRINCÍPIO 4 — DIVISÃO COM MÚLTIPLOS MOTORISTAS:
+- Divida por ZONAS GEOGRÁFICAS — cada motorista fica com uma região
+- NUNCA envie 2 motoristas para a mesma região
+- Zonas de BH/Grande BH: Sul, Centro-Sul, Centro, Centro-Norte, Norte, Leste, Oeste, Contagem, Vespasiano, Ribeirão das Neves, Sabará, etc.
+- Entregas muito distantes das demais (ex: Vespasiano numa rota de BH Sul) devem ser priorizadas primeiro se a janela exigir
+
+PRINCÍPIO 5 — ROTA APROVADA COMO REFERÊNCIA:
+Itapoã → Gutierrez (07:00) → Funcionários (07:20) → Santa Efigênia (07:35) → Floresta (07:50) → Sagrada Família (aguarda até 09:00) → Boa Vista (09:15) → Cachoeirinha (09:35)
+Este é o padrão correto: bloco 07h ordenado geograficamente de sul para norte, depois blocos 09h.
+
+═══════════════════════════════════════
+REGRAS APRENDIDAS COM O DONO
+═══════════════════════════════════════
+${regrasTexto}
+
+═══════════════════════════════════════
+CORREÇÕES REGISTRADAS
+═══════════════════════════════════════
+${correcoesTexto}
+
+═══════════════════════════════════════
+EXEMPLOS DE ROTAS APROVADAS
+═══════════════════════════════════════
+${exemploTexto}
+
+═══════════════════════════════════════
+FORMATO DE RESPOSTA
+═══════════════════════════════════════
+Retorne SOMENTE JSON válido, sem markdown, sem texto extra:
 {
   "motoristas": [
     {
       "id": 1,
       "nome": "Motorista 1",
-      "ponto_partida": "endereço de partida",
-      "hora_saida": "17:00",
+      "ponto_partida": "Rua Manoel Lopes Coelho, 174 - Itapoã, BH",
+      "hora_saida": "06:10",
+      "zona": "Sul/Centro de BH",
       "entregas": [
         {
           "ordem": 1,
-          "numero": 19,
-          "endereco": "Alameda Dos Judiciários, 151 - Cândida Ferreira",
-          "produto": "Maleta Premium",
-          "janela_inicio": "17:00",
-          "janela_fim": "21:00",
-          "chegada_prevista": "17:35",
-          "km_anterior": 22,
-          "tempo_anterior_min": 35,
+          "numero": 1,
+          "endereco": "Rua Cachoeira de Minas, 162 - Gutierrez",
+          "produto": "Box Luxo",
+          "janela_inicio": "07:00",
+          "janela_fim": "10:00",
+          "chegada_prevista": "07:00",
+          "aguarda": false,
+          "km_anterior": 15,
+          "tempo_anterior_min": 50,
           "status": "ok"
         }
       ],
-      "km_total": 95,
+      "km_total": 45,
       "tempo_total_min": 180
     }
   ],
-  "alertas": ["Entrega #26 fora da janela de horário - chegada prevista 21:20, janela até 20:30"]
+  "alertas": [],
+  "raciocinio": "Explique brevemente como pensou a rota — quais blocos formou e por quê essa ordem geográfica"
 }
 
-O campo status deve ser "ok" se dentro da janela, ou "atrasado" se fora.
-Distribua as entregas entre os motoristas de forma inteligente, respeitando os horários.
-Se não souber o ponto de partida exato, use o que foi fornecido ou "Belo Horizonte, MG" como padrão.`;
+Status: "ok" se dentro da janela, "atrasado" se fora. Campo "aguarda": true se o motorista chega antes da janela abrir.`;
+}
 
-export default function AgenteRotas() {
-  const [motoristas, setMotoristas] = useState([{ id: 1, nome: "Motorista 1", partida: "", horaSaida: "17:00" }]);
+// ─── Build feedback prompt ────────────────────────────────────────────────
+function buildFeedbackPrompt(rotaAtual, feedback, memoria) {
+  return `Você é o DG — O Montador de Rotas. 
+
+O dono da operação deu o seguinte feedback sobre a rota que você montou:
+"${feedback}"
+
+Rota atual:
+${JSON.stringify(rotaAtual, null, 2)}
+
+Com base no feedback, faça os ajustes necessários e retorne:
+1. A rota corrigida no mesmo formato JSON
+2. A regra aprendida com essa correção (em 1-2 frases objetivas)
+
+Responda SOMENTE em JSON:
+{
+  "rotaCorrigida": { ...mesmo formato da rota... },
+  "regraAprendida": "Nunca colocar X junto com Y porque..."
+}`;
+}
+
+// ─── Main Component ───────────────────────────────────────────────────────
+export default function DGMontadorRotas() {
+  const [apiKey, setApiKey] = useState(() => localStorage.getItem("dg_apikey") || "");
+  const [showKey, setShowKey] = useState(false);
   const [imagem, setImagem] = useState(null);
   const [imagemBase64, setImagemBase64] = useState(null);
   const [imagemType, setImagemType] = useState("image/png");
+  const [motoristas, setMotoristas] = useState([{ id: 1, nome: "Motorista 1", partida: "Rua Manoel Lopes Coelho, 174 - Itapoã, BH" }]);
   const [resultado, setResultado] = useState(null);
   const [loading, setLoading] = useState(false);
   const [erro, setErro] = useState(null);
   const [step, setStep] = useState("config");
-  const [apiKey, setApiKey] = useState("");
-  const [showKey, setShowKey] = useState(false);
+  const [feedback, setFeedback] = useState("");
+  const [loadingFeedback, setLoadingFeedback] = useState(false);
+  const [memoria, setMemoria] = useState(carregarMemoria);
+  const [showMemoria, setShowMemoria] = useState(false);
+  const [feedbackEnviado, setFeedbackEnviado] = useState(null);
   const fileRef = useRef();
 
+  useEffect(() => {
+    if (apiKey) localStorage.setItem("dg_apikey", apiKey);
+  }, [apiKey]);
+
   const addMotorista = () => {
-    const id = Date.now();
-    const num = motoristas.length + 1;
-    setMotoristas([...motoristas, { id, nome: `Motorista ${num}`, partida: "", horaSaida: "17:00" }]);
+    setMotoristas([...motoristas, {
+      id: Date.now(),
+      nome: `Motorista ${motoristas.length + 1}`,
+      partida: "Rua Manoel Lopes Coelho, 174 - Itapoã, BH"
+    }]);
   };
 
   const removeMotorista = (id) => {
     if (motoristas.length === 1) return;
-    setMotoristas(motoristas.filter((m) => m.id !== id));
+    setMotoristas(motoristas.filter(m => m.id !== id));
   };
 
   const updateMotorista = (id, field, value) => {
-    setMotoristas(motoristas.map((m) => (m.id === id ? { ...m, [field]: value } : m)));
+    setMotoristas(motoristas.map(m => m.id === id ? { ...m, [field]: value } : m));
   };
 
   const handleImagem = (file) => {
@@ -89,26 +195,17 @@ export default function AgenteRotas() {
     reader.readAsDataURL(file);
   };
 
-  const handleDrop = (e) => {
-    e.preventDefault();
-    const file = e.dataTransfer.files[0];
-    if (file) handleImagem(file);
-  };
+  const gerarRota = async () => {
+    if (!imagemBase64) { setErro("Adicione o print da lista de entregas."); return; }
+    if (!apiKey.trim()) { setErro("Insira sua chave API Anthropic."); return; }
+    setLoading(true); setErro(null);
 
-  const gerarRotas = async () => {
-    if (!imagemBase64) { setErro("Por favor, adicione a imagem da lista de entregas."); return; }
-    if (!apiKey.trim()) { setErro("Por favor, insira sua chave da API Anthropic."); return; }
-    setLoading(true);
-    setErro(null);
-
-    const motoristaInfo = motoristas.map(m =>
-      `${m.nome}: partida de "${m.partida || "Belo Horizonte, MG"}" às ${m.horaSaida}`
+    const motInfo = motoristas.map(m =>
+      `${m.nome}: partida de "${m.partida}"`
     ).join("\n");
 
-    const userMessage = `Temos ${motoristas.length} motorista(s):\n${motoristaInfo}\n\nAnalise a imagem com a lista de entregas e monte a rota otimizada para cada motorista, respeitando obrigatoriamente as janelas de horário.`;
-
     try {
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -119,359 +216,346 @@ export default function AgenteRotas() {
         body: JSON.stringify({
           model: "claude-sonnet-4-20250514",
           max_tokens: 4000,
-          system: SYSTEM_PROMPT,
+          system: buildSystemPrompt(memoria),
           messages: [{
             role: "user",
             content: [
               { type: "image", source: { type: "base64", media_type: imagemType, data: imagemBase64 } },
-              { type: "text", text: userMessage }
+              { type: "text", text: `Temos ${motoristas.length} motorista(s):\n${motInfo}\n\nMonte a rota seguindo rigorosamente os princípios que você aprendeu.` }
             ]
           }]
         })
       });
 
-      if (!response.ok) {
-        const errData = await response.json();
-        throw new Error(errData.error?.message || "Erro na API");
-      }
-
-      const data = await response.json();
+      if (!res.ok) { const e = await res.json(); throw new Error(e.error?.message || "Erro na API"); }
+      const data = await res.json();
       const text = data.content?.map(i => i.text || "").join("") || "";
       const clean = text.replace(/```json|```/g, "").trim();
       const parsed = JSON.parse(clean);
       setResultado(parsed);
       setStep("resultado");
-    } catch (err) {
-      setErro("Erro: " + err.message);
-      console.error(err);
+    } catch (e) {
+      setErro("Erro: " + e.message);
     } finally {
       setLoading(false);
     }
   };
 
-  const statusColor = (status) => status === "atrasado" ? "#FF3B30" : "#34C759";
-  const statusLabel = (status) => status === "atrasado" ? "⚠️ Fora do prazo" : "✅ No prazo";
-  const getMapsUrl = (endereco) =>
-    `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(endereco + ", Belo Horizonte, MG")}`;
+  const aprovarRota = () => {
+    const resumo = resultado.motoristas.map(m =>
+      `${m.nome} (${m.zona}): ${m.entregas.map(e => e.endereco.split("-")[0].trim()).join(" → ")}`
+    ).join(" | ");
+
+    const novaMemoria = {
+      ...memoria,
+      rotasAprovadas: [...memoria.rotasAprovadas, {
+        resumo,
+        data: new Date().toLocaleDateString("pt-BR"),
+        raciocinio: resultado.raciocinio
+      }]
+    };
+    setMemoria(novaMemoria);
+    salvarMemoria(novaMemoria);
+    alert("✅ Rota aprovada e salva na memória do DG!");
+  };
+
+  const enviarFeedback = async () => {
+    if (!feedback.trim()) return;
+    setLoadingFeedback(true);
+
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": apiKey.trim(),
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true"
+        },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 4000,
+          messages: [{
+            role: "user",
+            content: buildFeedbackPrompt(resultado, feedback, memoria)
+          }]
+        })
+      });
+
+      const data = await res.json();
+      const text = data.content?.map(i => i.text || "").join("") || "";
+      const clean = text.replace(/```json|```/g, "").trim();
+      const parsed = JSON.parse(clean);
+
+      // Salva correção e regra na memória
+      const novaMemoria = {
+        ...memoria,
+        correcoes: [...memoria.correcoes, `Feedback: "${feedback}" → Regra: ${parsed.regraAprendida}`],
+        regras: [...memoria.regras, parsed.regraAprendida]
+      };
+      setMemoria(novaMemoria);
+      salvarMemoria(novaMemoria);
+
+      setResultado(parsed.rotaCorrigida);
+      setFeedbackEnviado(`✅ Rota corrigida! Aprendi: "${parsed.regraAprendida}"`);
+      setFeedback("");
+    } catch (e) {
+      setErro("Erro ao processar feedback: " + e.message);
+    } finally {
+      setLoadingFeedback(false);
+    }
+  };
+
+  const limparMemoria = () => {
+    if (confirm("Tem certeza? Isso apaga todo o aprendizado do DG.")) {
+      const m = { regras: [], rotasAprovadas: [], correcoes: [] };
+      setMemoria(m);
+      salvarMemoria(m);
+    }
+  };
+
+  const statusColor = (s) => s === "atrasado" ? "#FF3B30" : "#34C759";
 
   return (
-    <div style={{
-      minHeight: "100vh",
-      background: "#0A0A0F",
-      fontFamily: "'DM Sans', sans-serif",
-      color: "#F0EEE8",
-      position: "relative",
-      overflow: "hidden"
-    }}>
-      <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
+    <div style={{ minHeight: "100vh", background: "#080810", fontFamily: "'DM Sans', sans-serif", color: "#F0EEE8" }}>
+      <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,300;0,400;0,500;0,700;0,900;1,400&family=Bebas+Neue&display=swap" rel="stylesheet" />
 
-      <div style={{
-        position: "fixed", inset: 0, zIndex: 0,
-        backgroundImage: "linear-gradient(rgba(255,107,53,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(255,107,53,0.04) 1px, transparent 1px)",
-        backgroundSize: "40px 40px"
-      }} />
-      <div style={{
-        position: "fixed", top: "-200px", left: "50%", transform: "translateX(-50%)",
-        width: "600px", height: "400px",
-        background: "radial-gradient(circle, rgba(255,107,53,0.12) 0%, transparent 70%)",
-        zIndex: 0, pointerEvents: "none"
-      }} />
+      {/* Background */}
+      <div style={{ position: "fixed", inset: 0, zIndex: 0, background: "radial-gradient(ellipse at 20% 20%, rgba(255,107,53,0.08) 0%, transparent 50%), radial-gradient(ellipse at 80% 80%, rgba(46,196,182,0.06) 0%, transparent 50%)" }} />
+      <div style={{ position: "fixed", inset: 0, zIndex: 0, backgroundImage: "linear-gradient(rgba(255,107,53,0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(255,107,53,0.03) 1px, transparent 1px)", backgroundSize: "60px 60px" }} />
 
-      <div style={{ position: "relative", zIndex: 1, maxWidth: "900px", margin: "0 auto", padding: "40px 24px" }}>
+      <div style={{ position: "relative", zIndex: 1, maxWidth: "960px", margin: "0 auto", padding: "40px 24px" }}>
 
         {/* Header */}
-        <div style={{ marginBottom: "48px" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "8px" }}>
-            <div style={{
-              width: "36px", height: "36px", borderRadius: "10px",
-              background: "linear-gradient(135deg, #FF6B35, #FF3B7A)",
-              display: "flex", alignItems: "center", justifyContent: "center",
-              fontSize: "18px"
-            }}>🗺️</div>
-            <span style={{ fontFamily: "'Space Mono', monospace", fontSize: "11px", color: "#FF6B35", letterSpacing: "3px", textTransform: "uppercase" }}>
-              Route Agent v1.0
-            </span>
+        <div style={{ marginBottom: "48px", borderBottom: "1px solid #1A1A2E", paddingBottom: "32px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+            <div>
+              <p style={{ margin: "0 0 4px", fontFamily: "'Bebas Neue', sans-serif", fontSize: "13px", color: "#FF6B35", letterSpacing: "4px" }}>SISTEMA DE ROTAS INTELIGENTE</p>
+              <h1 style={{ margin: 0, fontFamily: "'Bebas Neue', sans-serif", fontSize: "64px", lineHeight: 0.9, letterSpacing: "2px" }}>
+                DG <span style={{ color: "#FF6B35" }}>—</span><br />
+                <span style={{ color: "#FF6B35" }}>O MONTADOR</span><br />
+                DE ROTAS
+              </h1>
+              <p style={{ margin: "16px 0 0", color: "#666", fontSize: "14px" }}>
+                {memoria.regras.length} regras aprendidas · {memoria.rotasAprovadas.length} rotas aprovadas · {memoria.correcoes.length} correções
+              </p>
+            </div>
+            <button onClick={() => setShowMemoria(!showMemoria)} style={{
+              background: "rgba(255,107,53,0.1)", border: "1px solid rgba(255,107,53,0.3)",
+              borderRadius: "12px", padding: "10px 16px", color: "#FF6B35",
+              cursor: "pointer", fontSize: "12px", fontFamily: "'DM Sans', sans-serif",
+              fontWeight: "600", letterSpacing: "1px"
+            }}>🧠 MEMÓRIA</button>
           </div>
-          <h1 style={{ fontSize: "38px", fontWeight: "700", margin: 0, lineHeight: 1.1, letterSpacing: "-1px" }}>
-            DG — O<br /><span style={{ color: "#FF6B35" }}>Montador de Rotas</span>
-          </h1>
-          <p style={{ marginTop: "12px", color: "#888", fontSize: "15px", fontWeight: "300" }}>
-            Envie o print da lista de entregas · A IA monta a rota respeitando os horários
-          </p>
         </div>
 
+        {/* Memória Panel */}
+        {showMemoria && (
+          <div style={{ background: "rgba(255,107,53,0.05)", border: "1px solid rgba(255,107,53,0.2)", borderRadius: "16px", padding: "24px", marginBottom: "32px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
+              <h3 style={{ margin: 0, fontFamily: "'Bebas Neue'", fontSize: "20px", color: "#FF6B35", letterSpacing: "2px" }}>🧠 MEMÓRIA DO DG</h3>
+              <button onClick={limparMemoria} style={{ background: "rgba(255,59,48,0.1)", border: "1px solid rgba(255,59,48,0.3)", borderRadius: "8px", padding: "6px 12px", color: "#FF3B30", cursor: "pointer", fontSize: "11px" }}>Limpar tudo</button>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px" }}>
+              <div>
+                <p style={{ margin: "0 0 10px", fontSize: "11px", color: "#FF6B35", letterSpacing: "2px", textTransform: "uppercase" }}>Regras aprendidas</p>
+                {memoria.regras.length === 0 ? <p style={{ color: "#444", fontSize: "13px" }}>Nenhuma ainda</p> :
+                  memoria.regras.map((r, i) => (
+                    <div key={i} style={{ background: "rgba(255,255,255,0.03)", borderRadius: "8px", padding: "8px 12px", marginBottom: "6px", fontSize: "12px", color: "#aaa", borderLeft: "2px solid #FF6B35" }}>{r}</div>
+                  ))}
+              </div>
+              <div>
+                <p style={{ margin: "0 0 10px", fontSize: "11px", color: "#2EC4B6", letterSpacing: "2px", textTransform: "uppercase" }}>Rotas aprovadas</p>
+                {memoria.rotasAprovadas.length === 0 ? <p style={{ color: "#444", fontSize: "13px" }}>Nenhuma ainda</p> :
+                  memoria.rotasAprovadas.map((r, i) => (
+                    <div key={i} style={{ background: "rgba(255,255,255,0.03)", borderRadius: "8px", padding: "8px 12px", marginBottom: "6px", fontSize: "12px", color: "#aaa", borderLeft: "2px solid #2EC4B6" }}>
+                      <span style={{ color: "#666", fontSize: "10px" }}>{r.data} · </span>{r.resumo}
+                    </div>
+                  ))}
+              </div>
+            </div>
+          </div>
+        )}
+
         {step === "config" && (
-          <div style={{ display: "flex", flexDirection: "column", gap: "28px" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
 
             {/* API Key */}
             <div>
-              <label style={{ fontSize: "12px", fontFamily: "'Space Mono', monospace", color: "#FF6B35", letterSpacing: "2px", textTransform: "uppercase", display: "block", marginBottom: "12px" }}>
-                00 — Chave API Anthropic
-              </label>
+              <label style={{ fontSize: "11px", fontFamily: "'Bebas Neue'", color: "#FF6B35", letterSpacing: "3px", display: "block", marginBottom: "10px" }}>00 — CHAVE API ANTHROPIC</label>
               <div style={{ position: "relative" }}>
-                <input
-                  type={showKey ? "text" : "password"}
-                  placeholder="sk-ant-..."
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  style={{
-                    width: "100%", background: "rgba(255,255,255,0.05)", border: "1px solid #2A2A3E",
-                    borderRadius: "10px", padding: "12px 48px 12px 16px", color: "#F0EEE8",
-                    fontSize: "14px", outline: "none", fontFamily: "'Space Mono', monospace",
-                    boxSizing: "border-box"
-                  }}
-                />
-                <button onClick={() => setShowKey(!showKey)} style={{
-                  position: "absolute", right: "12px", top: "50%", transform: "translateY(-50%)",
-                  background: "none", border: "none", color: "#666", cursor: "pointer", fontSize: "16px"
-                }}>{showKey ? "🙈" : "👁️"}</button>
+                <input type={showKey ? "text" : "password"} placeholder="sk-ant-..." value={apiKey}
+                  onChange={e => setApiKey(e.target.value)}
+                  style={{ width: "100%", background: "rgba(255,255,255,0.04)", border: "1px solid #1E1E2E", borderRadius: "10px", padding: "12px 48px 12px 16px", color: "#F0EEE8", fontSize: "14px", outline: "none", fontFamily: "monospace", boxSizing: "border-box" }} />
+                <button onClick={() => setShowKey(!showKey)} style={{ position: "absolute", right: "12px", top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "#555", cursor: "pointer" }}>{showKey ? "🙈" : "👁️"}</button>
               </div>
-              <p style={{ margin: "6px 0 0", fontSize: "11px", color: "#555" }}>
-                Obtenha em console.anthropic.com · Nunca é salva, fica só no seu navegador
-              </p>
+              <p style={{ margin: "6px 0 0", fontSize: "11px", color: "#444" }}>Salva automaticamente no seu navegador</p>
             </div>
 
             {/* Upload */}
             <div>
-              <label style={{ fontSize: "12px", fontFamily: "'Space Mono', monospace", color: "#FF6B35", letterSpacing: "2px", textTransform: "uppercase", display: "block", marginBottom: "12px" }}>
-                01 — Lista de Entregas (Print)
-              </label>
-              <div
-                onClick={() => fileRef.current.click()}
-                onDrop={handleDrop}
-                onDragOver={(e) => e.preventDefault()}
-                style={{
-                  border: imagem ? "2px solid #FF6B35" : "2px dashed #333",
-                  borderRadius: "16px",
-                  padding: imagem ? "0" : "48px 24px",
-                  textAlign: "center",
-                  cursor: "pointer",
-                  background: imagem ? "transparent" : "rgba(255,107,53,0.03)",
-                  overflow: "hidden",
-                  minHeight: imagem ? "200px" : "auto",
-                  position: "relative"
-                }}
-              >
+              <label style={{ fontSize: "11px", fontFamily: "'Bebas Neue'", color: "#FF6B35", letterSpacing: "3px", display: "block", marginBottom: "10px" }}>01 — PRINT DA LISTA DE ENTREGAS</label>
+              <div onClick={() => fileRef.current.click()} onDrop={e => { e.preventDefault(); handleImagem(e.dataTransfer.files[0]); }} onDragOver={e => e.preventDefault()}
+                style={{ border: imagem ? "2px solid #FF6B35" : "2px dashed #222", borderRadius: "16px", padding: imagem ? 0 : "40px 24px", textAlign: "center", cursor: "pointer", background: "rgba(255,107,53,0.02)", overflow: "hidden", minHeight: imagem ? "200px" : "auto", position: "relative" }}>
                 {imagem ? (
                   <>
                     <img src={imagem} alt="Lista" style={{ width: "100%", borderRadius: "14px", display: "block" }} />
-                    <div style={{
-                      position: "absolute", bottom: "12px", right: "12px",
-                      background: "#FF6B35", color: "#fff", borderRadius: "8px",
-                      padding: "6px 12px", fontSize: "12px", fontWeight: "600"
-                    }}>Trocar imagem</div>
+                    <div style={{ position: "absolute", bottom: "12px", right: "12px", background: "#FF6B35", color: "#fff", borderRadius: "8px", padding: "6px 12px", fontSize: "12px", fontWeight: "700" }}>Trocar</div>
                   </>
                 ) : (
                   <>
-                    <div style={{ fontSize: "32px", marginBottom: "12px" }}>📋</div>
-                    <p style={{ margin: 0, color: "#888", fontSize: "14px" }}>Arraste o print aqui ou clique para selecionar</p>
-                    <p style={{ margin: "4px 0 0", color: "#555", fontSize: "12px" }}>PNG, JPG, JPEG</p>
+                    <div style={{ fontSize: "28px", marginBottom: "8px" }}>📋</div>
+                    <p style={{ margin: 0, color: "#555", fontSize: "14px" }}>Arraste o print ou clique para selecionar</p>
                   </>
                 )}
               </div>
-              <input ref={fileRef} type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => handleImagem(e.target.files[0])} />
+              <input ref={fileRef} type="file" accept="image/*" style={{ display: "none" }} onChange={e => handleImagem(e.target.files[0])} />
             </div>
 
             {/* Motoristas */}
             <div>
-              <label style={{ fontSize: "12px", fontFamily: "'Space Mono', monospace", color: "#FF6B35", letterSpacing: "2px", textTransform: "uppercase", display: "block", marginBottom: "12px" }}>
-                02 — Motoristas
-              </label>
-              <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+              <label style={{ fontSize: "11px", fontFamily: "'Bebas Neue'", color: "#FF6B35", letterSpacing: "3px", display: "block", marginBottom: "10px" }}>02 — MOTORISTAS</label>
+              <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
                 {motoristas.map((m, i) => (
-                  <div key={m.id} style={{
-                    background: "rgba(255,255,255,0.03)",
-                    border: "1px solid #1E1E2E",
-                    borderRadius: "14px",
-                    padding: "16px 20px",
-                    display: "grid",
-                    gridTemplateColumns: "40px 1fr auto 120px 36px",
-                    gap: "12px",
-                    alignItems: "center"
-                  }}>
-                    <div style={{
-                      width: "32px", height: "32px", borderRadius: "8px",
-                      background: COLORS[i % COLORS.length].bg,
-                      display: "flex", alignItems: "center", justifyContent: "center",
-                      fontFamily: "'Space Mono', monospace", fontSize: "12px", fontWeight: "700", color: "#fff"
-                    }}>{i + 1}</div>
-                    <input
-                      placeholder={`Nome (ex: João)`}
-                      value={m.nome}
-                      onChange={(e) => updateMotorista(m.id, "nome", e.target.value)}
-                      style={{
-                        background: "rgba(255,255,255,0.05)", border: "1px solid #2A2A3E",
-                        borderRadius: "8px", padding: "8px 12px", color: "#F0EEE8",
-                        fontSize: "13px", outline: "none", fontFamily: "'DM Sans', sans-serif"
-                      }}
-                    />
-                    <input
-                      placeholder="Endereço de partida"
-                      value={m.partida}
-                      onChange={(e) => updateMotorista(m.id, "partida", e.target.value)}
-                      style={{
-                        background: "rgba(255,255,255,0.05)", border: "1px solid #2A2A3E",
-                        borderRadius: "8px", padding: "8px 12px", color: "#F0EEE8",
-                        fontSize: "13px", outline: "none", fontFamily: "'DM Sans', sans-serif",
-                        minWidth: "220px"
-                      }}
-                    />
-                    <input
-                      type="time"
-                      value={m.horaSaida}
-                      onChange={(e) => updateMotorista(m.id, "horaSaida", e.target.value)}
-                      style={{
-                        background: "rgba(255,255,255,0.05)", border: "1px solid #2A2A3E",
-                        borderRadius: "8px", padding: "8px 12px", color: "#F0EEE8",
-                        fontSize: "13px", outline: "none", fontFamily: "'Space Mono', monospace"
-                      }}
-                    />
-                    <button
-                      onClick={() => removeMotorista(m.id)}
-                      style={{
-                        width: "36px", height: "36px", borderRadius: "8px",
-                        background: "rgba(255,59,48,0.1)", border: "none",
-                        color: "#FF3B30", cursor: "pointer", fontSize: "18px",
-                        display: "flex", alignItems: "center", justifyContent: "center"
-                      }}
-                    >×</button>
+                  <div key={m.id} style={{ display: "grid", gridTemplateColumns: "36px 1fr 36px", gap: "10px", alignItems: "center", background: "rgba(255,255,255,0.02)", border: "1px solid #1A1A2E", borderRadius: "12px", padding: "12px 16px" }}>
+                    <div style={{ width: "28px", height: "28px", borderRadius: "8px", background: CORES[i % CORES.length], display: "flex", alignItems: "center", justifyContent: "center", fontSize: "12px", fontWeight: "900", color: "#fff" }}>{i + 1}</div>
+                    <input placeholder="Nome do motorista" value={m.nome} onChange={e => updateMotorista(m.id, "nome", e.target.value)}
+                      style={{ background: "transparent", border: "none", color: "#F0EEE8", fontSize: "14px", outline: "none", fontFamily: "'DM Sans'" }} />
+                    <button onClick={() => removeMotorista(m.id)} style={{ width: "28px", height: "28px", borderRadius: "6px", background: "rgba(255,59,48,0.1)", border: "none", color: "#FF3B30", cursor: "pointer", fontSize: "16px" }}>×</button>
                   </div>
                 ))}
-                <button onClick={addMotorista} style={{
-                  background: "transparent", border: "1px dashed #333",
-                  borderRadius: "12px", padding: "12px", color: "#666",
-                  cursor: "pointer", fontSize: "13px", fontFamily: "'DM Sans', sans-serif"
-                }}>+ Adicionar motorista</button>
+                <button onClick={addMotorista} style={{ background: "transparent", border: "1px dashed #222", borderRadius: "10px", padding: "10px", color: "#555", cursor: "pointer", fontSize: "13px" }}>+ Adicionar motorista</button>
               </div>
             </div>
 
-            {erro && (
-              <div style={{ background: "rgba(255,59,48,0.1)", border: "1px solid rgba(255,59,48,0.3)", borderRadius: "10px", padding: "12px 16px", color: "#FF3B30", fontSize: "13px" }}>
-                {erro}
-              </div>
-            )}
+            {erro && <div style={{ background: "rgba(255,59,48,0.1)", border: "1px solid rgba(255,59,48,0.3)", borderRadius: "10px", padding: "12px 16px", color: "#FF3B30", fontSize: "13px" }}>{erro}</div>}
 
-            <button
-              onClick={gerarRotas}
-              disabled={loading}
-              style={{
-                background: loading ? "#333" : "linear-gradient(135deg, #FF6B35, #FF3B7A)",
-                border: "none", borderRadius: "14px", padding: "18px 32px",
-                color: "#fff", fontSize: "15px", fontWeight: "700",
-                cursor: loading ? "not-allowed" : "pointer",
-                fontFamily: "'DM Sans', sans-serif",
-                display: "flex", alignItems: "center", justifyContent: "center", gap: "10px",
-                transition: "all 0.2s", letterSpacing: "-0.3px"
-              }}
-            >
-              {loading ? (
-                <span style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                  <span style={{ display: "inline-block", animation: "spin 1s linear infinite" }}>⟳</span>
-                  Processando entregas com IA...
-                </span>
-              ) : "🚀 Gerar Rotas Otimizadas"}
+            <button onClick={gerarRota} disabled={loading} style={{
+              background: loading ? "#1A1A2E" : "linear-gradient(135deg, #FF6B35 0%, #FF3B7A 100%)",
+              border: "none", borderRadius: "14px", padding: "20px",
+              color: "#fff", fontSize: "16px", fontWeight: "900",
+              cursor: loading ? "not-allowed" : "pointer",
+              fontFamily: "'Bebas Neue'", letterSpacing: "3px",
+              display: "flex", alignItems: "center", justifyContent: "center", gap: "12px"
+            }}>
+              {loading ? <><span style={{ animation: "spin 1s linear infinite", display: "inline-block" }}>⟳</span> MONTANDO ROTA...</> : "🚀 MONTAR ROTA"}
             </button>
           </div>
         )}
 
         {step === "resultado" && resultado && (
-          <div style={{ display: "flex", flexDirection: "column", gap: "32px" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: "28px" }}>
 
-            {resultado.alertas?.length > 0 && (
-              <div style={{ background: "rgba(255,183,0,0.08)", border: "1px solid rgba(255,183,0,0.3)", borderRadius: "14px", padding: "16px 20px" }}>
-                <p style={{ margin: "0 0 8px", fontFamily: "'Space Mono', monospace", fontSize: "11px", color: "#F7B731", letterSpacing: "2px" }}>⚠️ ALERTAS</p>
-                {resultado.alertas.map((a, i) => (
-                  <p key={i} style={{ margin: "4px 0", fontSize: "13px", color: "#FFD060" }}>{a}</p>
-                ))}
+            {/* Raciocínio do DG */}
+            {resultado.raciocinio && (
+              <div style={{ background: "rgba(46,196,182,0.06)", border: "1px solid rgba(46,196,182,0.2)", borderRadius: "14px", padding: "18px 20px" }}>
+                <p style={{ margin: "0 0 6px", fontSize: "11px", color: "#2EC4B6", letterSpacing: "2px", fontFamily: "'Bebas Neue'" }}>🧠 RACIOCÍNIO DO DG</p>
+                <p style={{ margin: 0, fontSize: "13px", color: "#aaa", lineHeight: 1.6 }}>{resultado.raciocinio}</p>
               </div>
             )}
 
-            {resultado.motoristas?.map((m, mi) => {
-              const cor = COLORS[mi % COLORS.length];
-              return (
-                <div key={m.id} style={{ background: "rgba(255,255,255,0.02)", border: `1px solid ${cor.bg}33`, borderRadius: "20px", overflow: "hidden" }}>
-                  <div style={{ background: `${cor.bg}15`, borderBottom: `1px solid ${cor.bg}33`, padding: "20px 24px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <div>
-                      <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                        <div style={{ width: "10px", height: "10px", borderRadius: "50%", background: cor.bg }} />
-                        <span style={{ fontWeight: "700", fontSize: "17px" }}>{m.nome}</span>
-                      </div>
-                      <p style={{ margin: "4px 0 0", fontSize: "12px", color: "#888" }}>
-                        📍 {m.ponto_partida} · Saída {m.hora_saida}
-                      </p>
+            {/* Alertas */}
+            {resultado.alertas?.length > 0 && (
+              <div style={{ background: "rgba(247,183,49,0.08)", border: "1px solid rgba(247,183,49,0.3)", borderRadius: "14px", padding: "16px 20px" }}>
+                <p style={{ margin: "0 0 8px", fontSize: "11px", color: "#F7B731", letterSpacing: "2px", fontFamily: "'Bebas Neue'" }}>⚠️ ALERTAS</p>
+                {resultado.alertas.map((a, i) => <p key={i} style={{ margin: "4px 0", fontSize: "13px", color: "#FFD060" }}>{a}</p>)}
+              </div>
+            )}
+
+            {/* Rotas */}
+            {resultado.motoristas?.map((m, mi) => (
+              <div key={m.id} style={{ background: "rgba(255,255,255,0.02)", border: `1px solid ${CORES[mi % CORES.length]}33`, borderRadius: "20px", overflow: "hidden" }}>
+                <div style={{ background: `${CORES[mi % CORES.length]}12`, borderBottom: `1px solid ${CORES[mi % CORES.length]}22`, padding: "20px 24px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div>
+                    <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                      <div style={{ width: "8px", height: "8px", borderRadius: "50%", background: CORES[mi % CORES.length] }} />
+                      <span style={{ fontFamily: "'Bebas Neue'", fontSize: "22px", letterSpacing: "1px" }}>{m.nome}</span>
+                      <span style={{ fontSize: "11px", color: "#555", background: "rgba(255,255,255,0.05)", padding: "2px 8px", borderRadius: "20px" }}>{m.zona}</span>
                     </div>
-                    <div style={{ textAlign: "right" }}>
-                      <p style={{ margin: 0, fontFamily: "'Space Mono', monospace", fontSize: "20px", fontWeight: "700", color: cor.bg }}>{m.km_total} km</p>
-                      <p style={{ margin: "2px 0 0", fontSize: "12px", color: "#888" }}>{Math.floor(m.tempo_total_min / 60)}h{m.tempo_total_min % 60}min no total</p>
-                    </div>
+                    <p style={{ margin: "4px 0 0", fontSize: "12px", color: "#666" }}>📍 {m.ponto_partida} · Saída {m.hora_saida}</p>
                   </div>
-
-                  <div style={{ padding: "8px 0" }}>
-                    {m.entregas?.map((e, ei) => (
-                      <div key={ei} style={{
-                        padding: "16px 24px",
-                        borderBottom: ei < m.entregas.length - 1 ? "1px solid #1A1A28" : "none",
-                        display: "grid",
-                        gridTemplateColumns: "40px 1fr auto",
-                        gap: "16px",
-                        alignItems: "start"
-                      }}>
-                        <div style={{
-                          width: "36px", height: "36px", borderRadius: "10px",
-                          background: `${cor.bg}20`, border: `1px solid ${cor.bg}40`,
-                          display: "flex", alignItems: "center", justifyContent: "center",
-                          fontFamily: "'Space Mono', monospace", fontSize: "12px", fontWeight: "700", color: cor.bg
-                        }}>{e.ordem}</div>
-
-                        <div>
-                          <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-                            <span style={{ fontFamily: "'Space Mono', monospace", fontSize: "11px", color: "#666" }}>#{e.numero}</span>
-                            <a href={getMapsUrl(e.endereco)} target="_blank" rel="noopener noreferrer"
-                              style={{ color: "#F0EEE8", fontWeight: "500", fontSize: "14px", textDecoration: "none", borderBottom: "1px solid #333" }}>
-                              {e.endereco}
-                            </a>
-                          </div>
-                          <p style={{ margin: "4px 0 0", fontSize: "12px", color: "#888" }}>{e.produto}</p>
-                          {ei > 0 && (
-                            <p style={{ margin: "4px 0 0", fontSize: "11px", color: "#555", fontFamily: "'Space Mono', monospace" }}>
-                              ↑ {e.km_anterior} km · {e.tempo_anterior_min} min do anterior
-                            </p>
-                          )}
-                        </div>
-
-                        <div style={{ textAlign: "right", minWidth: "110px" }}>
-                          <p style={{ margin: 0, fontFamily: "'Space Mono', monospace", fontSize: "15px", fontWeight: "700", color: "#F0EEE8" }}>{e.chegada_prevista}</p>
-                          <p style={{ margin: "2px 0", fontSize: "11px", color: "#666" }}>janela {e.janela_inicio}–{e.janela_fim}</p>
-                          <span style={{
-                            fontSize: "10px", fontWeight: "600", padding: "2px 8px", borderRadius: "20px",
-                            background: e.status === "atrasado" ? "rgba(255,59,48,0.15)" : "rgba(52,199,89,0.15)",
-                            color: statusColor(e.status)
-                          }}>{statusLabel(e.status)}</span>
-                        </div>
-                      </div>
-                    ))}
+                  <div style={{ textAlign: "right" }}>
+                    <p style={{ margin: 0, fontFamily: "'Bebas Neue'", fontSize: "28px", color: CORES[mi % CORES.length] }}>{m.km_total} km</p>
+                    <p style={{ margin: 0, fontSize: "12px", color: "#555" }}>{Math.floor(m.tempo_total_min / 60)}h{m.tempo_total_min % 60}min</p>
                   </div>
                 </div>
-              );
-            })}
 
-            <button
-              onClick={() => { setStep("config"); setResultado(null); }}
-              style={{
-                background: "transparent", border: "1px solid #333", borderRadius: "12px",
-                padding: "14px", color: "#888", cursor: "pointer", fontSize: "13px",
-                fontFamily: "'DM Sans', sans-serif"
-              }}
-            >← Nova rota</button>
+                {m.entregas?.map((e, ei) => (
+                  <div key={ei} style={{ padding: "14px 24px", borderBottom: ei < m.entregas.length - 1 ? "1px solid #111" : "none", display: "grid", gridTemplateColumns: "36px 1fr auto", gap: "14px", alignItems: "start" }}>
+                    <div style={{ width: "32px", height: "32px", borderRadius: "8px", background: `${CORES[mi % CORES.length]}18`, border: `1px solid ${CORES[mi % CORES.length]}33`, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Bebas Neue'", fontSize: "14px", color: CORES[mi % CORES.length] }}>{e.ordem}</div>
+                    <div>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                        <span style={{ fontSize: "11px", color: "#555", fontFamily: "monospace" }}>#{e.numero}</span>
+                        <span style={{ color: "#F0EEE8", fontWeight: "500", fontSize: "14px" }}>{e.endereco}</span>
+                      </div>
+                      <p style={{ margin: "3px 0 0", fontSize: "12px", color: "#666" }}>{e.produto}</p>
+                      {e.aguarda && <p style={{ margin: "3px 0 0", fontSize: "11px", color: "#F7B731" }}>⏳ Aguarda abertura da janela no local</p>}
+                      {ei > 0 && <p style={{ margin: "3px 0 0", fontSize: "11px", color: "#444", fontFamily: "monospace" }}>↑ {e.km_anterior}km · {e.tempo_anterior_min}min</p>}
+                    </div>
+                    <div style={{ textAlign: "right", minWidth: "100px" }}>
+                      <p style={{ margin: 0, fontFamily: "'Bebas Neue'", fontSize: "20px" }}>{e.chegada_prevista}</p>
+                      <p style={{ margin: "2px 0", fontSize: "11px", color: "#555" }}>{e.janela_inicio}–{e.janela_fim}</p>
+                      <span style={{ fontSize: "10px", fontWeight: "700", padding: "2px 8px", borderRadius: "20px", background: e.status === "atrasado" ? "rgba(255,59,48,0.15)" : "rgba(52,199,89,0.15)", color: statusColor(e.status) }}>
+                        {e.status === "atrasado" ? "⚠️ ATRASADO" : "✅ OK"}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ))}
+
+            {/* Feedback */}
+            <div style={{ background: "rgba(255,255,255,0.02)", border: "1px solid #1A1A2E", borderRadius: "16px", padding: "24px" }}>
+              <p style={{ margin: "0 0 16px", fontFamily: "'Bebas Neue'", fontSize: "18px", color: "#FF6B35", letterSpacing: "2px" }}>💬 TREINAR O DG</p>
+
+              {feedbackEnviado && (
+                <div style={{ background: "rgba(52,199,89,0.1)", border: "1px solid rgba(52,199,89,0.3)", borderRadius: "10px", padding: "12px 16px", marginBottom: "16px", fontSize: "13px", color: "#34C759" }}>
+                  {feedbackEnviado}
+                </div>
+              )}
+
+              <div style={{ display: "flex", gap: "10px" }}>
+                <input
+                  placeholder='Ex: "Não coloque Sabará junto com Savassi, são regiões opostas"'
+                  value={feedback}
+                  onChange={e => setFeedback(e.target.value)}
+                  onKeyDown={e => e.key === "Enter" && enviarFeedback()}
+                  style={{ flex: 1, background: "rgba(255,255,255,0.04)", border: "1px solid #1E1E2E", borderRadius: "10px", padding: "12px 16px", color: "#F0EEE8", fontSize: "13px", outline: "none", fontFamily: "'DM Sans'" }}
+                />
+                <button onClick={enviarFeedback} disabled={loadingFeedback} style={{
+                  background: "linear-gradient(135deg, #FF6B35, #FF3B7A)", border: "none", borderRadius: "10px",
+                  padding: "12px 20px", color: "#fff", fontFamily: "'Bebas Neue'", fontSize: "14px",
+                  letterSpacing: "1px", cursor: "pointer", whiteSpace: "nowrap"
+                }}>{loadingFeedback ? "⟳" : "CORRIGIR"}</button>
+              </div>
+              <p style={{ margin: "8px 0 0", fontSize: "11px", color: "#444" }}>O DG vai corrigir a rota e aprender com sua correção para as próximas vezes</p>
+            </div>
+
+            {/* Ações */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+              <button onClick={aprovarRota} style={{
+                background: "rgba(52,199,89,0.1)", border: "1px solid rgba(52,199,89,0.3)",
+                borderRadius: "12px", padding: "16px", color: "#34C759",
+                fontFamily: "'Bebas Neue'", fontSize: "16px", letterSpacing: "2px", cursor: "pointer"
+              }}>✅ APROVAR ROTA</button>
+              <button onClick={() => { setStep("config"); setResultado(null); setFeedbackEnviado(null); }} style={{
+                background: "transparent", border: "1px solid #222",
+                borderRadius: "12px", padding: "16px", color: "#666",
+                fontFamily: "'Bebas Neue'", fontSize: "16px", letterSpacing: "2px", cursor: "pointer"
+              }}>← NOVA ROTA</button>
+            </div>
           </div>
         )}
       </div>
 
       <style>{`
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-        input::placeholder { color: #444; }
-        input[type="time"]::-webkit-calendar-picker-indicator { filter: invert(0.5); }
+        input::placeholder { color: #333; }
         * { box-sizing: border-box; }
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: #0A0A14; }
+        ::-webkit-scrollbar-thumb { background: #222; border-radius: 3px; }
       `}</style>
     </div>
   );
